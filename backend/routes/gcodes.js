@@ -68,9 +68,13 @@ router.use(protect);
 
 router.get('/part/:partId', async (req, res) => {
   try {
+    // The compound index { part: 1, versionNumber: -1 } covers both the filter
+    // and the sort in a single pass — no in-memory sort needed
     const versions = await GCodeVersion.find({ part: req.params.partId })
+      .select('-__v')
       .populate('uploadedBy', 'name')
-      .sort({ versionNumber: -1 });
+      .sort({ versionNumber: -1 })
+      .lean();
     res.json(versions);
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -81,18 +85,30 @@ router.get('/part/:partId', async (req, res) => {
 
 router.post('/part/:partId', upload.single('file'), async (req, res) => {
   try {
-    const { notes } = req.body;
+    const { notes, piecesPerBed } = req.body;
     const partId = req.params.partId;
     const ts = Date.now();
     const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
-    const storedFilename = `${ts}-${req.file.originalname}`;
+
+    // If pieces per bed was provided, append it to the filename before the extension
+    // e.g. bracket.3mf + 4 pieces → bracket_4pcs.3mf
+    const dotExt = path.extname(req.file.originalname).toLowerCase();
+    const baseName = path.basename(req.file.originalname, dotExt);
+    const displayName = piecesPerBed
+      ? `${baseName}_${piecesPerBed}pcs${dotExt}`
+      : req.file.originalname;
+    const storedFilename = `${ts}-${displayName}`;
 
     // Mark previous versions as not latest
     await GCodeVersion.updateMany({ part: partId }, { isLatest: false });
 
-    // Get next version number
-    const count = await GCodeVersion.countDocuments({ part: partId });
-    const versionNumber = count + 1;
+    // Get next version number: single indexed read instead of countDocuments
+    // (countDocuments does a full scan; findOne with sort uses the compound index)
+    const latest = await GCodeVersion.findOne({ part: partId })
+      .sort({ versionNumber: -1 })
+      .select('versionNumber')
+      .lean();
+    const versionNumber = (latest?.versionNumber ?? 0) + 1;
     const version = `v${versionNumber}.0`;
 
     // Upload original file to GridFS
@@ -117,7 +133,7 @@ router.post('/part/:partId', upload.single('file'), async (req, res) => {
       version,
       versionNumber,
       filename: storedFilename,
-      originalName: req.file.originalname,
+      originalName: displayName,
       fileType: ext,
       fileId,
       gcodePreviewId,
@@ -138,13 +154,17 @@ router.post('/part/:partId', upload.single('file'), async (req, res) => {
 
 router.get('/:id/content', async (req, res) => {
   try {
-    const gcode = await GCodeVersion.findById(req.params.id);
+    const gcode = await GCodeVersion.findById(req.params.id)
+      .select('gcodePreviewId fileId')
+      .lean();
     if (!gcode) return res.status(404).json({ message: 'Not found' });
 
     const fileId = gcode.gcodePreviewId || gcode.fileId;
     if (!fileId) return res.status(404).json({ message: 'File not stored in database' });
 
     res.setHeader('Content-Type', 'text/plain');
+    // Allow browser to cache gcode content for 5 minutes — it never changes
+    res.setHeader('Cache-Control', 'private, max-age=300');
     const stream = getBucket().openDownloadStream(fileId);
     stream.on('error', () => {
       if (!res.headersSent) res.status(404).json({ message: 'File not found in storage' });
@@ -159,10 +179,13 @@ router.get('/:id/content', async (req, res) => {
 
 router.get('/:id/mesh', async (req, res) => {
   try {
-    const gcode = await GCodeVersion.findById(req.params.id);
+    const gcode = await GCodeVersion.findById(req.params.id)
+      .select('meshId')
+      .lean();
     if (!gcode || !gcode.meshId) return res.status(404).json({ message: 'No mesh available' });
 
     res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Cache-Control', 'private, max-age=300');
     const stream = getBucket().openDownloadStream(gcode.meshId);
     stream.on('error', () => {
       if (!res.headersSent) res.status(404).json({ message: 'Mesh file not found in storage' });
@@ -177,7 +200,9 @@ router.get('/:id/mesh', async (req, res) => {
 
 router.get('/:id/download', async (req, res) => {
   try {
-    const gcode = await GCodeVersion.findById(req.params.id);
+    const gcode = await GCodeVersion.findById(req.params.id)
+      .select('fileId originalName')
+      .lean();
     if (!gcode) return res.status(404).json({ message: 'Not found' });
     if (!gcode.fileId) return res.status(404).json({ message: 'File not stored in database' });
 
@@ -196,7 +221,9 @@ router.get('/:id/download', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const gcode = await GCodeVersion.findById(req.params.id);
+    const gcode = await GCodeVersion.findById(req.params.id)
+      .select('fileId gcodePreviewId meshId')
+      .lean();
     if (!gcode) return res.status(404).json({ message: 'Not found' });
 
     // Delete original file from GridFS
@@ -210,7 +237,7 @@ router.delete('/:id', async (req, res) => {
     // Delete mesh if present
     await deleteFromGridFS(gcode.meshId);
 
-    await gcode.deleteOne();
+    await GCodeVersion.deleteOne({ _id: gcode._id });
     res.json({ message: 'Deleted' });
   } catch (e) {
     res.status(500).json({ message: e.message });

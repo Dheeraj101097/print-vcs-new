@@ -5,8 +5,17 @@ const { protect } = require('../middleware/auth');
 router.use(protect);
 
 router.get('/', async (req, res) => {
-  const products = await Product.find().populate('createdBy', 'name email');
-  res.json(products);
+  try {
+    // .lean() returns plain JS objects — 2-5x faster than hydrated Mongoose docs
+    // .select('-__v') drops the internal version field from the response
+    const products = await Product.find()
+      .select('-__v')
+      .populate('createdBy', 'name email')
+      .lean();
+    res.json(products);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 router.post('/', async (req, res) => {
@@ -22,19 +31,34 @@ router.post('/', async (req, res) => {
 });
 
 router.get('/:id', async (req, res) => {
-  const product = await Product.findById(req.params.id).populate('createdBy', 'name');
-  if (!product) return res.status(404).json({ message: 'Not found' });
-  res.json(product);
+  try {
+    const product = await Product.findById(req.params.id)
+      .select('-__v')
+      .populate('createdBy', 'name')
+      .lean();
+    if (!product) return res.status(404).json({ message: 'Not found' });
+    res.json(product);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 router.put('/:id', async (req, res) => {
-  const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  res.json(product);
+  try {
+    const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean();
+    res.json(product);
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 });
 
 router.delete('/:id', async (req, res) => {
-  await Product.findByIdAndDelete(req.params.id);
-  res.json({ message: 'Deleted' });
+  try {
+    await Product.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Deleted' });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 module.exports = router;

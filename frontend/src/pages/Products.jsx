@@ -1,28 +1,34 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 export default function Products() {
-  const [products, setProducts] = useState([]);
+  const queryClient = useQueryClient();
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ name: '', description: '', sku: '' });
 
-  const load = () => axios.get('/api/products').then(r => setProducts(r.data));
-  useEffect(() => { load(); }, []);
+  const { data: products = [], isLoading } = useQuery({
+    queryKey: ['products'],
+    queryFn: () => axios.get('/api/products').then(r => r.data),
+  });
 
   const create = async (e) => {
     e.preventDefault();
     await axios.post('/api/products', form);
     setForm({ name: '', description: '', sku: '' });
     setShowModal(false);
-    load();
+    // Invalidate so the list refetches with the new product
+    queryClient.invalidateQueries({ queryKey: ['products'] });
   };
 
   const remove = async (id) => {
     if (!confirm('Delete this product and all its parts?')) return;
     await axios.delete(`/api/products/${id}`);
-    load();
+    queryClient.invalidateQueries({ queryKey: ['products'] });
   };
+
+  if (isLoading) return <p style={{ color: 'var(--text-muted-dark)' }}>Loading...</p>;
 
   return (
     <>
