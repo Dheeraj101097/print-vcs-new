@@ -11,7 +11,10 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const product = await Product.create({ ...req.body, createdBy: req.user._id });
+    const { name, description, sku } = req.body;
+    const data = { name, description, createdBy: req.user._id };
+    if (sku && sku.trim()) data.sku = sku.trim();
+    const product = await Product.create(data);
     res.status(201).json(product);
   } catch (e) {
     res.status(400).json({ message: e.message });
