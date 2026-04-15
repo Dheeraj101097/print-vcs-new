@@ -16,4 +16,11 @@ const gcodeVersionSchema = new mongoose.Schema({
   uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+// Compound index covering the list query AND its sort in a single scan:
+//   GCodeVersion.find({ part: id }).sort({ versionNumber: -1 })
+gcodeVersionSchema.index({ part: 1, versionNumber: -1 });
+
+// Index for "get latest version" queries and updateMany({ part, isLatest })
+gcodeVersionSchema.index({ part: 1, isLatest: -1 });
+
 module.exports = mongoose.model('GCodeVersion', gcodeVersionSchema);

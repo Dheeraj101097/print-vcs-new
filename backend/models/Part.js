@@ -7,4 +7,8 @@ const partSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
+// Critical: this index makes GET /parts/product/:productId a single index scan
+// instead of a full collection scan
+partSchema.index({ product: 1 });
+
 module.exports = mongoose.model('Part', partSchema);

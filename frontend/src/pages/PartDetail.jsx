@@ -1,39 +1,57 @@
-import { useState, useEffect } from 'react';
+import { useState, lazy, Suspense } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
-import GCodeRenderer from '../components/GCodeRenderer';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+
+// Lazy-load the THREE.js viewer — it's ~600KB and only needed on this page.
+// All other pages now load without pulling in Three.js at all.
+const GCodeRenderer = lazy(() => import('../components/GCodeRenderer'));
 
 export default function PartDetail() {
   const { partId } = useParams();
-  const [part, setPart] = useState(null);
-  const [versions, setVersions] = useState([]);
+  const queryClient = useQueryClient();
   const [showUpload, setShowUpload] = useState(false);
   const [file, setFile] = useState(null);
   const [notes, setNotes] = useState('');
+  const [piecesPerBed, setPiecesPerBed] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [selected, setSelected] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [gcodeContent, setGcodeContent] = useState('');
   const [loadingContent, setLoadingContent] = useState(false);
 
-  useEffect(() => {
-    axios.get(`/api/parts/${partId}`).then(r => setPart(r.data));
-    loadVersions();
-  }, [partId]);
+  // Part info and version list fire in parallel — no waterfall
+  const { data: part, isLoading: loadingPart } = useQuery({
+    queryKey: ['part', partId],
+    queryFn: () => axios.get(`/api/parts/${partId}`).then(r => r.data),
+  });
 
-  const loadVersions = () =>
-    axios.get(`/api/gcodes/part/${partId}`).then(r => {
-      setVersions(r.data);
-      if (r.data.length > 0) selectVersion(r.data[0]);
-    });
+  const { data: versions = [], isLoading: loadingVersions } = useQuery({
+    queryKey: ['versions', partId],
+    queryFn: async () => {
+      const r = await axios.get(`/api/gcodes/part/${partId}`);
+      return r.data;
+    },
+    // Once versions load, auto-select the latest and fetch its content
+    onSuccess: (data) => {
+      if (data.length > 0 && selectedId === null) {
+        selectVersion(data[0]);
+      }
+    },
+  });
+
+  // The currently selected version object (derived from versions list)
+  const selected = versions.find(v => v._id === selectedId) ?? null;
 
   const selectVersion = async (v) => {
-    setSelected(v);
+    setSelectedId(v._id);
     setLoadingContent(true);
     setGcodeContent('');
     try {
       const res = await axios.get(`/api/gcodes/${v._id}/content`, { responseType: 'text' });
       setGcodeContent(res.data);
-    } catch { setGcodeContent(''); }
+    } catch {
+      setGcodeContent('');
+    }
     setLoadingContent(false);
   };
 
@@ -44,10 +62,14 @@ export default function PartDetail() {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('notes', notes);
+    if (piecesPerBed) fd.append('piecesPerBed', piecesPerBed);
     try {
       await axios.post(`/api/gcodes/part/${partId}`, fd);
-      setFile(null); setNotes(''); setShowUpload(false);
-      loadVersions();
+      setFile(null); setNotes(''); setPiecesPerBed(''); setShowUpload(false);
+      // Clear selected so the new latest version gets auto-selected
+      setSelectedId(null);
+      setGcodeContent('');
+      queryClient.invalidateQueries({ queryKey: ['versions', partId] });
     } catch (err) {
       alert(err.response?.data?.message || 'Upload failed');
     }
@@ -71,8 +93,8 @@ export default function PartDetail() {
   const remove = async (id) => {
     if (!confirm('Delete this version?')) return;
     await axios.delete(`/api/gcodes/${id}`);
-    if (selected?._id === id) { setSelected(null); setGcodeContent(''); }
-    loadVersions();
+    if (selectedId === id) { setSelectedId(null); setGcodeContent(''); }
+    queryClient.invalidateQueries({ queryKey: ['versions', partId] });
   };
 
   const fmt = (bytes) => {
@@ -81,7 +103,7 @@ export default function PartDetail() {
   };
   const fmtDate = (d) => new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 
-  if (!part) return <p style={{ color: 'var(--text-muted-dark)' }}>Loading...</p>;
+  if (loadingPart) return <p style={{ color: 'var(--text-muted-dark)' }}>Loading...</p>;
 
   return (
     <>
@@ -105,7 +127,12 @@ export default function PartDetail() {
         {/* Version list */}
         <div className="version-list">
           <div className="version-list-header">Version History ({versions.length})</div>
-          {versions.length === 0 && (
+          {loadingVersions && (
+            <div style={{ padding: '24px 18px', color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
+              Loading versions...
+            </div>
+          )}
+          {!loadingVersions && versions.length === 0 && (
             <div style={{ padding: '24px 18px', color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
               No versions yet
             </div>
@@ -113,7 +140,7 @@ export default function PartDetail() {
           {versions.map(v => (
             <div
               key={v._id}
-              className={`version-row${selected?._id === v._id ? ' active' : ''}`}
+              className={`version-row${selectedId === v._id ? ' active' : ''}`}
               onClick={() => selectVersion(v)}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -161,10 +188,7 @@ export default function PartDetail() {
                   <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: 15 }}>{selected.originalName}</span>
                   <span className="badge badge-gold">{selected.version}</span>
                 </div>
-                <button
-                  className="btn-ghost btn-sm"
-                  onClick={() => download(selected)}
-                >
+                <button className="btn-ghost btn-sm" onClick={() => download(selected)}>
                   ↓ Download
                 </button>
               </div>
@@ -178,7 +202,18 @@ export default function PartDetail() {
                   Loading preview...
                 </div>
               ) : (
-                <GCodeRenderer content={gcodeContent} />
+                // Suspense boundary for the lazy THREE.js renderer
+                <Suspense fallback={
+                  <div style={{
+                    height: 520, background: '#111318', borderRadius: 8,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: 'var(--text-muted)', fontSize: 14
+                  }}>
+                    Loading viewer...
+                  </div>
+                }>
+                  <GCodeRenderer content={gcodeContent} />
+                </Suspense>
               )}
 
               {selected.notes && (
@@ -219,6 +254,16 @@ export default function PartDetail() {
                   onChange={e => setFile(e.target.files[0])}
                   required
                   style={{ padding: '8px 0', background: 'transparent', border: 'none', boxShadow: 'none' }}
+                />
+              </div>
+              <div className="form-group">
+                <label>Pieces per Bed</label>
+                <input
+                  type="number"
+                  min="1"
+                  placeholder="e.g. 4"
+                  value={piecesPerBed}
+                  onChange={e => setPiecesPerBed(e.target.value)}
                 />
               </div>
               <div className="form-group">

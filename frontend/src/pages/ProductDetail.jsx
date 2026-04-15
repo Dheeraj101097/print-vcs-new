@@ -1,37 +1,41 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 export default function ProductDetail() {
   const { productId } = useParams();
-  const [product, setProduct] = useState(null);
-  const [parts, setParts] = useState([]);
+  const queryClient = useQueryClient();
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ name: '', description: '' });
 
-  useEffect(() => {
-    axios.get(`/api/products/${productId}`).then(r => setProduct(r.data));
-    loadParts();
-  }, [productId]);
+  // Both requests fire in parallel — React Query deduplicates them if the
+  // same key is already in-flight from another component
+  const { data: product, isLoading: loadingProduct } = useQuery({
+    queryKey: ['product', productId],
+    queryFn: () => axios.get(`/api/products/${productId}`).then(r => r.data),
+  });
 
-  const loadParts = () =>
-    axios.get(`/api/parts/product/${productId}`).then(r => setParts(r.data));
+  const { data: parts = [], isLoading: loadingParts } = useQuery({
+    queryKey: ['parts', productId],
+    queryFn: () => axios.get(`/api/parts/product/${productId}`).then(r => r.data),
+  });
 
   const create = async (e) => {
     e.preventDefault();
     await axios.post('/api/parts', { ...form, product: productId });
     setForm({ name: '', description: '' });
     setShowModal(false);
-    loadParts();
+    queryClient.invalidateQueries({ queryKey: ['parts', productId] });
   };
 
   const remove = async (id) => {
     if (!confirm('Delete this part?')) return;
     await axios.delete(`/api/parts/${id}`);
-    loadParts();
+    queryClient.invalidateQueries({ queryKey: ['parts', productId] });
   };
 
-  if (!product) return <p style={{ color: 'var(--text-muted-dark)' }}>Loading...</p>;
+  if (loadingProduct) return <p style={{ color: 'var(--text-muted-dark)' }}>Loading...</p>;
 
   return (
     <>
@@ -46,7 +50,7 @@ export default function ProductDetail() {
           <h1>{product.name}</h1>
           <p className="page-subtitle">
             {product.sku && <span className="badge badge-gold" style={{ marginRight: 8 }}>SKU: {product.sku}</span>}
-            {parts.length} part{parts.length !== 1 ? 's' : ''}
+            {loadingParts ? '...' : `${parts.length} part${parts.length !== 1 ? 's' : ''}`}
           </p>
         </div>
         <button className="btn-primary" onClick={() => setShowModal(true)}>+ Add Part</button>
@@ -75,7 +79,7 @@ export default function ProductDetail() {
             </div>
           </div>
         ))}
-        {parts.length === 0 && (
+        {!loadingParts && parts.length === 0 && (
           <div className="empty-state" style={{ gridColumn: '1/-1' }}>
             <div className="empty-state-icon">🔩</div>
             <p>No parts yet. Add the first part for this product.</p>
