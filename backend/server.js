@@ -25,12 +25,13 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 function startKeepAlive() {
   if (process.env.NODE_ENV !== 'production') return;
 
-  const selfUrl = process.env.RENDER_URL
-    ? `${process.env.RENDER_URL}/api/health`
-    : null;
+  // RENDER_EXTERNAL_URL is injected automatically by Render on every deployment.
+  // RENDER_URL is our own custom fallback if someone overrides it manually.
+  const base = process.env.RENDER_EXTERNAL_URL || process.env.RENDER_URL;
+  const selfUrl = base ? `${base}/api/health` : null;
 
   if (!selfUrl) {
-    console.log('[keep-alive] RENDER_URL not set — skipping keep-alive ping');
+    console.log('[keep-alive] no Render URL found — skipping keep-alive ping');
     return;
   }
 
