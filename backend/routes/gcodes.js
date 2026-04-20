@@ -88,15 +88,19 @@ router.post('/part/:partId', upload.single('file'), async (req, res) => {
     const { notes, piecesPerBed } = req.body;
     const partId = req.params.partId;
     const ts = Date.now();
-    const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
 
-    // If pieces per bed was provided, append it to the filename before the extension
-    // e.g. bracket.3mf + 4 pieces → bracket_4pcs.3mf
-    const dotExt = path.extname(req.file.originalname).toLowerCase();
-    const baseName = path.basename(req.file.originalname, dotExt);
+    // Use lastIndexOf so compound extensions (.3mf, .gcode) are handled correctly
+    // and there's no platform difference from path.extname on Windows
+    const origName = req.file.originalname;
+    const lastDot = origName.lastIndexOf('.');
+    const baseName = lastDot > 0 ? origName.slice(0, lastDot) : origName;
+    const dotExt  = lastDot > 0 ? origName.slice(lastDot).toLowerCase() : '';
+    const ext = dotExt.replace('.', ''); // e.g. '3mf', 'gcode'
+
+    // Append pieces count BEFORE the extension: bracket.3mf + 4 → bracket_4pcs.3mf
     const displayName = piecesPerBed
       ? `${baseName}_${piecesPerBed}pcs${dotExt}`
-      : req.file.originalname;
+      : origName;
     const storedFilename = `${ts}-${displayName}`;
 
     // Mark previous versions as not latest
@@ -214,6 +218,23 @@ router.get('/:id/download', async (req, res) => {
     stream.pipe(res);
   } catch (e) {
     res.status(500).json({ message: e.message });
+  }
+});
+
+// ── PUT /:id — edit version notes ─────────────────────────────────────────
+
+router.put('/:id', async (req, res) => {
+  try {
+    const { notes } = req.body;
+    const version = await GCodeVersion.findByIdAndUpdate(
+      req.params.id,
+      { notes },
+      { new: true }
+    ).select('-__v').lean();
+    if (!version) return res.status(404).json({ message: 'Not found' });
+    res.json(version);
+  } catch (e) {
+    res.status(400).json({ message: e.message });
   }
 });
 

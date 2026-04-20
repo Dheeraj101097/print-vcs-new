@@ -3,8 +3,6 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 
-// Route-based code splitting: each page is a separate JS chunk loaded on demand.
-// This means the Products bundle no longer includes the THREE.js 3D viewer code.
 const Login = lazy(() => import('./pages/Login'));
 const Products = lazy(() => import('./pages/Products'));
 const ProductDetail = lazy(() => import('./pages/ProductDetail'));
@@ -37,7 +35,9 @@ export default function App() {
               <Route index element={<Navigate to="/products" />} />
               <Route path="products" element={<Products />} />
               <Route path="products/:productId" element={<ProductDetail />} />
-              <Route path="parts/:partId" element={<PartDetail />} />
+              {/* productId in the URL means PartDetail always knows its parent
+                  without an extra API call — data comes from RTK cache */}
+              <Route path="products/:productId/parts/:partId" element={<PartDetail />} />
             </Route>
           </Routes>
         </Suspense>

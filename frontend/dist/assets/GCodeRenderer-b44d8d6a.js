@@ -1,4 +1,4 @@
-import{r as Mi,j as Ln}from"./index-b1ea4d3b.js";/**
+import{r as Mi,j as Ln}from"./index-809429f3.js";/**
  * @license
  * Copyright 2010-2026 Three.js Authors
  * SPDX-License-Identifier: MIT

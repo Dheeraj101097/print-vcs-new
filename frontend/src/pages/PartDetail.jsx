@@ -1,46 +1,65 @@
-import { useState, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import Skeleton from 'react-loading-skeleton';
+import { useDispatch } from 'react-redux';
+import {
+  useGetProductQuery,
+  useGetPartQuery,
+  useGetVersionsQuery,
+  useUpdateVersionNotesMutation,
+  useDeleteVersionMutation,
+  api,
+} from '../store/api';
 
-// Lazy-load the THREE.js viewer — it's ~600KB and only needed on this page.
-// All other pages now load without pulling in Three.js at all.
 const GCodeRenderer = lazy(() => import('../components/GCodeRenderer'));
 
+function VersionRowSkeleton() {
+  return (
+    <div className="version-row" style={{ pointerEvents: 'none' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <Skeleton width={40} height={14} />
+        <Skeleton width={44} height={18} borderRadius={10} />
+      </div>
+      <Skeleton width={160} height={12} style={{ marginTop: 4 }} />
+      <Skeleton width={200} height={10} style={{ marginTop: 4 }} />
+    </div>
+  );
+}
+
 export default function PartDetail() {
-  const { partId } = useParams();
-  const queryClient = useQueryClient();
+  // productId comes from the URL — no extra API call needed for breadcrumb
+  const { productId, partId } = useParams();
+
+  const { data: product } = useGetProductQuery(productId);
+  const { data: part, isLoading: loadingPart } = useGetPartQuery(partId);
+  const { data: versions = [], isLoading: loadingVersions } = useGetVersionsQuery(partId);
+
+  const dispatch = useDispatch();
+  const [updateVersionNotes] = useUpdateVersionNotesMutation();
+  const [deleteVersion] = useDeleteVersionMutation();
+
+  // Upload state
   const [showUpload, setShowUpload] = useState(false);
   const [file, setFile] = useState(null);
   const [notes, setNotes] = useState('');
   const [piecesPerBed, setPiecesPerBed] = useState('');
   const [uploading, setUploading] = useState(false);
+
+  // Viewer state
   const [selectedId, setSelectedId] = useState(null);
   const [gcodeContent, setGcodeContent] = useState('');
   const [loadingContent, setLoadingContent] = useState(false);
 
-  // Part info and version list fire in parallel — no waterfall
-  const { data: part, isLoading: loadingPart } = useQuery({
-    queryKey: ['part', partId],
-    queryFn: () => axios.get(`/api/parts/${partId}`).then(r => r.data),
-  });
+  // Edit notes state
+  const [editNotes, setEditNotes] = useState(null); // { id, notes, partId }
 
-  const { data: versions = [], isLoading: loadingVersions } = useQuery({
-    queryKey: ['versions', partId],
-    queryFn: async () => {
-      const r = await axios.get(`/api/gcodes/part/${partId}`);
-      return r.data;
-    },
-    // Once versions load, auto-select the latest and fetch its content
-    onSuccess: (data) => {
-      if (data.length > 0 && selectedId === null) {
-        selectVersion(data[0]);
-      }
-    },
-  });
-
-  // The currently selected version object (derived from versions list)
-  const selected = versions.find(v => v._id === selectedId) ?? null;
+  // Auto-select the latest version when versions first load
+  useEffect(() => {
+    if (versions.length > 0 && selectedId === null) {
+      selectVersion(versions[0]);
+    }
+  }, [versions]);
 
   const selectVersion = async (v) => {
     setSelectedId(v._id);
@@ -55,6 +74,8 @@ export default function PartDetail() {
     setLoadingContent(false);
   };
 
+  const selected = versions.find(v => v._id === selectedId) ?? null;
+
   const upload = async (e) => {
     e.preventDefault();
     if (!file) return;
@@ -66,10 +87,10 @@ export default function PartDetail() {
     try {
       await axios.post(`/api/gcodes/part/${partId}`, fd);
       setFile(null); setNotes(''); setPiecesPerBed(''); setShowUpload(false);
-      // Clear selected so the new latest version gets auto-selected
       setSelectedId(null);
       setGcodeContent('');
-      queryClient.invalidateQueries({ queryKey: ['versions', partId] });
+      // Upload goes through axios (multipart), so manually invalidate the RTK cache
+      dispatch(api.util.invalidateTags([{ type: 'Version', id: partId }]));
     } catch (err) {
       alert(err.response?.data?.message || 'Upload failed');
     }
@@ -90,11 +111,16 @@ export default function PartDetail() {
     } catch { alert('Download failed'); }
   };
 
-  const remove = async (id) => {
+  const handleDelete = async (v) => {
     if (!confirm('Delete this version?')) return;
-    await axios.delete(`/api/gcodes/${id}`);
-    if (selectedId === id) { setSelectedId(null); setGcodeContent(''); }
-    queryClient.invalidateQueries({ queryKey: ['versions', partId] });
+    await deleteVersion({ id: v._id, partId });
+    if (selectedId === v._id) { setSelectedId(null); setGcodeContent(''); }
+  };
+
+  const handleSaveNotes = async (e) => {
+    e.preventDefault();
+    await updateVersionNotes({ id: editNotes.id, notes: editNotes.notes, partId });
+    setEditNotes(null);
   };
 
   const fmt = (bytes) => {
@@ -103,14 +129,39 @@ export default function PartDetail() {
   };
   const fmtDate = (d) => new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 
-  if (loadingPart) return <p style={{ color: 'var(--text-muted-dark)' }}>Loading...</p>;
+  if (loadingPart) {
+    return (
+      <>
+        <div className="breadcrumb">
+          <Link to="/products">Products</Link>
+          <span className="breadcrumb-sep">›</span>
+          <Skeleton width={80} height={14} inline />
+          <span className="breadcrumb-sep">›</span>
+          <Skeleton width={80} height={14} inline />
+        </div>
+        <div className="page-header">
+          <Skeleton width={200} height={28} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 20 }}>
+          <div className="version-list">
+            <div className="version-list-header"><Skeleton width={160} height={14} /></div>
+            {[1, 2, 3].map(i => <VersionRowSkeleton key={i} />)}
+          </div>
+          <Skeleton height={520} borderRadius={8} />
+        </div>
+      </>
+    );
+  }
+
+  // product may still be loading (cache hit is fast); fall back to part.product for breadcrumb
+  const productName = product?.name || part?.product?.name || 'Product';
 
   return (
     <>
       <div className="breadcrumb">
         <Link to="/products">Products</Link>
         <span className="breadcrumb-sep">›</span>
-        <Link to={`/products/${part.product?._id}`}>{part.product?.name || 'Product'}</Link>
+        <Link to={`/products/${productId}`}>{productName}</Link>
         <span className="breadcrumb-sep">›</span>
         <span style={{ color: 'var(--text-on-dark)' }}>{part.name}</span>
       </div>
@@ -127,11 +178,7 @@ export default function PartDetail() {
         {/* Version list */}
         <div className="version-list">
           <div className="version-list-header">Version History ({versions.length})</div>
-          {loadingVersions && (
-            <div style={{ padding: '24px 18px', color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
-              Loading versions...
-            </div>
-          )}
+          {loadingVersions && [1, 2, 3].map(i => <VersionRowSkeleton key={i} />)}
           {!loadingVersions && versions.length === 0 && (
             <div style={{ padding: '24px 18px', color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
               No versions yet
@@ -143,10 +190,16 @@ export default function PartDetail() {
               className={`version-row${selectedId === v._id ? ' active' : ''}`}
               onClick={() => selectVersion(v)}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{v.version}</span>
                 {v.isLatest && <span className="badge badge-green">Latest</span>}
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                  {/* Edit notes */}
+                  <button
+                    className="btn-ghost btn-sm"
+                    title="Edit notes"
+                    onClick={e => { e.stopPropagation(); setEditNotes({ id: v._id, notes: v.notes || '', partId }); }}
+                  >✏️</button>
                   <button
                     className="btn-ghost btn-sm"
                     onClick={e => { e.stopPropagation(); download(v); }}
@@ -154,14 +207,12 @@ export default function PartDetail() {
                   >↓</button>
                   <button
                     className="btn-danger btn-sm"
-                    onClick={e => { e.stopPropagation(); remove(v._id); }}
+                    onClick={e => { e.stopPropagation(); handleDelete(v); }}
                     title="Delete"
                   >✕</button>
                 </div>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                {v.originalName}
-              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v.originalName}</div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', display: 'flex', gap: 10 }}>
                 <span>{fmtDate(v.createdAt)}</span>
                 <span>{fmt(v.fileSize)}</span>
@@ -188,30 +239,13 @@ export default function PartDetail() {
                   <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: 15 }}>{selected.originalName}</span>
                   <span className="badge badge-gold">{selected.version}</span>
                 </div>
-                <button className="btn-ghost btn-sm" onClick={() => download(selected)}>
-                  ↓ Download
-                </button>
+                <button className="btn-ghost btn-sm" onClick={() => download(selected)}>↓ Download</button>
               </div>
 
               {loadingContent ? (
-                <div style={{
-                  height: 520, background: '#111318', borderRadius: 8,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: 'var(--text-muted)', fontSize: 14
-                }}>
-                  Loading preview...
-                </div>
+                <Skeleton height={520} borderRadius={8} baseColor="#111318" highlightColor="#1a1d24" />
               ) : (
-                // Suspense boundary for the lazy THREE.js renderer
-                <Suspense fallback={
-                  <div style={{
-                    height: 520, background: '#111318', borderRadius: 8,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: 'var(--text-muted)', fontSize: 14
-                  }}>
-                    Loading viewer...
-                  </div>
-                }>
+                <Suspense fallback={<Skeleton height={520} borderRadius={8} baseColor="#111318" highlightColor="#1a1d24" />}>
                   <GCodeRenderer content={gcodeContent} />
                 </Suspense>
               )}
@@ -241,6 +275,7 @@ export default function PartDetail() {
         </div>
       </div>
 
+      {/* Upload modal */}
       {showUpload && (
         <div className="modal-overlay" onClick={() => setShowUpload(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -280,6 +315,30 @@ export default function PartDetail() {
                 <button type="submit" className="btn-primary" disabled={uploading}>
                   {uploading ? 'Uploading...' : 'Upload Version'}
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit notes modal */}
+      {editNotes && (
+        <div className="modal-overlay" onClick={() => setEditNotes(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Edit Version Notes</h2>
+            <form onSubmit={handleSaveNotes}>
+              <div className="form-group">
+                <label>Notes</label>
+                <textarea
+                  rows={4}
+                  value={editNotes.notes}
+                  onChange={e => setEditNotes({ ...editNotes, notes: e.target.value })}
+                  placeholder="Describe what changed in this version..."
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+                <button type="button" className="btn-ghost" onClick={() => setEditNotes(null)}>Cancel</button>
+                <button type="submit" className="btn-primary">Save Notes</button>
               </div>
             </form>
           </div>
